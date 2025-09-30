@@ -177,7 +177,7 @@
             let db, auth, userId, userDocRef, userConfig;
             let firebaseReady = false;
             let growthChart;
-            let actualData = { weight: [] };
+            let actualData = { weight: [], completionRate: [] };
             let scrollYPosition = 0;
             
             // --- Helper Functions ---
@@ -223,7 +223,7 @@
                 userConfig.habits.forEach(habit => {
                     habitTracker.innerHTML += `<div class="flex items-center p-3 bg-gray-50 rounded-lg"><input type="checkbox" id="${habit.id}" class="h-5 w-5 rounded border-gray-300 text-emerald-500 focus:ring-emerald-500 cursor-pointer habit-checkbox"><label for="${habit.id}" class="ml-3 text-gray-700 flex-1 cursor-pointer">${habit.label}</label></div>`;
                 });
-                document.querySelectorAll('.habit-checkbox').forEach(c => c.addEventListener('change', () => { updateProgress(); saveData(); }));
+                document.querySelectorAll('.habit-checkbox').forEach(c => c.addEventListener('change', () => { updateProgressAndSave(); }));
                 
                 document.getElementById('plan-weekday-desc').innerHTML = userConfig.plans.weekday;
                 document.getElementById('plan-weekend-desc').innerHTML = userConfig.plans.weekend;
@@ -231,13 +231,27 @@
                 renderChart();
             };
 
-            const updateProgress = () => {
+            const updateProgressAndSave = () => {
                 const checkboxes = document.querySelectorAll('.habit-checkbox');
                 if (checkboxes.length === 0) return;
                 const checkedCount = document.querySelectorAll('.habit-checkbox:checked').length;
-                const percentage = (checkedCount / checkboxes.length) * 100;
+                const percentage = Math.round((checkedCount / checkboxes.length) * 100);
+                
                 document.getElementById('habit-progress-bar').style.width = `${percentage}%`;
-                document.getElementById('habit-progress-text').innerHTML = `오늘의 달성률: ${Math.round(percentage)}%`;
+                document.getElementById('habit-progress-text').innerHTML = `오늘의 달성률: ${percentage}%`;
+
+                // Update chart data
+                const todayStr = getTodayDateString();
+                const todayEntryIndex = actualData.completionRate.findIndex(item => item.x === todayStr);
+                if (todayEntryIndex !== -1) {
+                    actualData.completionRate[todayEntryIndex].y = percentage;
+                } else {
+                    actualData.completionRate.push({ x: todayStr, y: percentage });
+                }
+                actualData.completionRate.sort((a, b) => new Date(a.x) - new Date(b.x));
+
+                saveData();
+                renderChart();
             };
 
             const renderChart = () => {
@@ -255,18 +269,42 @@
                     { x: sixMonthDate.getTime(), y: userConfig.weightGoals.month6 }
                 ];
                 
-                const formattedActualData = actualData.weight.map(item => ({
-                    x: new Date(item.x).getTime(),
-                    y: item.y
-                }));
+                const formattedActualData = actualData.weight.map(item => ({ x: new Date(item.x).getTime(), y: item.y }));
+                const formattedCompletionData = (actualData.completionRate || []).map(item => ({ x: new Date(item.x).getTime(), y: item.y }));
 
                 if (growthChart) growthChart.destroy();
                 growthChart = new Chart(document.getElementById('growthChart').getContext('2d'), {
-                    type: 'line',
                     data: {
                         datasets: [
-                            { label: '목표 체중 (kg)', data: targetData, borderColor: 'rgba(210, 214, 220, 0.8)', tension: 0.1, borderDash: [5, 5], pointRadius: 5 },
-                            { label: '실제 체중 (kg)', data: formattedActualData, borderColor: 'rgba(52, 211, 153, 1)', tension: 0.1, pointRadius: 5, backgroundColor: 'rgba(52, 211, 153, 0.5)' }
+                             { 
+                                type: 'line',
+                                label: '목표 체중 (kg)', 
+                                data: targetData, 
+                                borderColor: 'rgba(210, 214, 220, 0.8)', 
+                                tension: 0.1, 
+                                borderDash: [5, 5], 
+                                pointRadius: 5,
+                                yAxisID: 'yWeight',
+                            },
+                            { 
+                                type: 'line',
+                                label: '실제 체중 (kg)', 
+                                data: formattedActualData, 
+                                borderColor: 'rgba(52, 211, 153, 1)', 
+                                tension: 0.1, 
+                                pointRadius: 5, 
+                                backgroundColor: 'rgba(52, 211, 153, 0.5)',
+                                yAxisID: 'yWeight',
+                            },
+                            {
+                                type: 'bar',
+                                label: '하루 달성률 (%)',
+                                data: formattedCompletionData,
+                                backgroundColor: 'rgba(251, 191, 36, 0.5)',
+                                borderColor: 'rgba(251, 191, 36, 1)',
+                                yAxisID: 'yPercentage',
+                                barPercentage: 0.5,
+                            }
                         ]
                     },
                     options: { 
@@ -275,15 +313,20 @@
                         scales: {
                             x: {
                                 type: 'time',
-                                time: {
-                                    unit: 'month',
-                                    tooltipFormat: 'yyyy-MM-dd',
-                                    displayFormats: { month: 'yyyy-MM' }
-                                },
-                                title: { display: true, text: '날짜' }
+                                time: { unit: 'month', tooltipFormat: 'MM-dd', displayFormats: { month: 'MM' } },
                             },
-                            y: {
+                            yWeight: {
+                                type: 'linear',
+                                position: 'left',
                                 title: { display: true, text: '체중 (kg)' }
+                            },
+                            yPercentage: {
+                                type: 'linear',
+                                position: 'right',
+                                title: { display: true, text: '달성률 (%)' },
+                                grid: { drawOnChartArea: false },
+                                min: 0,
+                                max: 100
                             }
                         }
                     }
@@ -312,8 +355,11 @@
                 if (docSnap.exists() && docSnap.data().config) {
                     const data = docSnap.data();
                     userConfig = data.config;
-                    actualData = data.growthData || { weight: [{ x: userConfig.startDate, y: userConfig.weightGoals.start }] };
+                    actualData = data.growthData || { weight: [{ x: userConfig.startDate, y: userConfig.weightGoals.start }], completionRate: [] };
+                    if (!actualData.completionRate) actualData.completionRate = [];
+
                     renderDashboard();
+                    
                     const today = getTodayDateString();
                     if (data.dailyHabits && data.dailyHabits[today]) {
                         Object.keys(data.dailyHabits[today]).forEach(key => {
@@ -321,7 +367,7 @@
                             if (checkbox) checkbox.checked = data.dailyHabits[today][key];
                         });
                     }
-                    updateProgress();
+                    updateProgressAndSave(); // 초기 로드 시 달성률 계산 및 저장
                 } else {
                     addHabitInput(); 
                     showModal(setupModal);
@@ -401,11 +447,11 @@
                         month6: parseFloat(document.getElementById('setup-weight-6').value),
                     }
                 };
-                actualData.weight = [{ x: startDate, y: startWeight }];
+                actualData = { weight: [{ x: startDate, y: startWeight }], completionRate: [] };
                 await saveData();
                 hideModal(setupModal);
                 renderDashboard();
-                updateProgress();
+                updateProgressAndSave();
             });
 
             copyUserIdBtn.addEventListener('click', () => navigator.clipboard.writeText(userId).then(() => alert('User ID가 복사되었습니다!')));
